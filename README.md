@@ -1,6 +1,32 @@
-# GCP Cost API Tests
+# GCP API Integration Test Suite
 
-A .NET 8 console application that demonstrates how to interact with four Google Cloud Platform billing and cost APIs using their official C# SDKs.
+A .NET 8 solution that tests four Google Cloud Platform billing and cost APIs using their
+official C# SDKs. Each phase is a self-contained **xUnit integration test project** that
+runs real API calls against your GCP account — no mocks.
+
+---
+
+## Solution structure
+
+```
+GCPApi.sln
+├── GcpApi.TestCommon/          # Shared auth fixture and settings reader
+├── Phase1.Billing.Tests/       # Cloud Billing API  (account metadata)
+├── Phase2.BigQuery.Tests/      # BigQuery API        (billing export queries)
+├── Phase3.Catalog.Tests/       # Cloud Catalog API   (public pricing / SKUs)
+└── Phase4.Budgets.Tests/       # Billing Budgets API (spend thresholds)
+```
+
+### NuGet packages used
+
+| Package | Version | Used by |
+|---------|---------|---------|
+| `Google.Cloud.Billing.V1` | 3.x | Phase 1, Phase 3 |
+| `Google.Cloud.BigQuery.V2` | 3.x | Phase 2 |
+| `Google.Cloud.Billing.Budgets.V1` | 2.x | Phase 4 |
+| `Xunit.SkippableFact` | 1.5.x | All test projects |
+
+---
 
 ## Prerequisites
 
@@ -10,7 +36,8 @@ A .NET 8 console application that demonstrates how to interact with four Google 
 
 ### Authentication
 
-All phases use [Application Default Credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials). Run this once before executing any phase:
+All phases use [Application Default Credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials).
+Run once before executing any tests:
 
 ```bash
 gcloud auth application-default login
@@ -18,181 +45,126 @@ gcloud auth application-default login
 
 ---
 
-## NuGet Packages
+## Configuration
 
-| Package | Version | Used by |
-|---|---|---|
-| `Google.Cloud.Billing.V1` | 3.10.0 | Phase 1, Phase 3 |
-| `Google.Cloud.BigQuery.V2` | 3.11.0 | Phase 2 |
-| `Google.Cloud.Billing.Budgets.V1` | 2.7.0 | Phase 4 |
+API-dependent tests read settings from **environment variables** or a local
+`testsettings.json` file (place it at the solution root or any parent folder).
 
-Install all at once:
+### Environment variables
 
+| Variable | Required for |
+|----------|-------------|
+| `GCP_BILLING_ACCOUNT_ID` | Phase 1, Phase 4 |
+| `GCP_PROJECT_ID` | Phase 1, Phase 4 |
+| `GCP_BIGQUERY_TABLE` | Phase 2 |
+
+### testsettings.json
+
+Copy `GcpApi.TestCommon/testsettings.template.json` to `testsettings.json` at the
+solution root and fill in your values:
+
+```json
+{
+  "BillingAccountId": "XXXXXX-XXXXXX-XXXXXX",
+  "ProjectId":        "your-gcp-project-id",
+  "BigQueryExportTable": "your-project.your_dataset.gcp_billing_export_v1_XXXXXX"
+}
+```
+
+> `testsettings.json` is listed in `.gitignore` — it will never be committed.
+
+---
+
+## Running the tests
+
+**All tests (skips API tests when config is absent):**
 ```bash
-dotnet add package Google.Cloud.Billing.V1
-dotnet add package Google.Cloud.BigQuery.V2
-dotnet add package Google.Cloud.Billing.Budgets.V1
+dotnet test GCPApi.sln
+```
+
+**Single phase:**
+```bash
+dotnet test Phase1.Billing.Tests
+dotnet test Phase2.BigQuery.Tests
+dotnet test Phase3.Catalog.Tests
+dotnet test Phase4.Budgets.Tests
+```
+
+**Pure-logic tests only (no credentials or config needed):**
+```bash
+dotnet test GCPApi.sln --filter "ParseProjectId|BuildCostQuery|BuildTestBudget"
 ```
 
 ---
 
-## Project Structure
+## Phase overview
 
-```
-GcpCostApiTests/
-├── Program.cs               # Entry point — edit to choose which phase to run
-├── Phase1BillingDemo.cs     # Phase 1: Cloud Billing API (account metadata)
-├── Phase2BigQueryDemo.cs    # Phase 2: BigQuery API (actual spend)
-├── Phase3CatalogDemo.cs     # Phase 3: Cloud Catalog API (list prices)
-└── Phase4BudgetDemo.cs      # Phase 4: Billing Budgets API (spend thresholds)
-```
+### Phase 1 — Cloud Billing API (`Google.Cloud.Billing.V1`)
 
----
+**IAM role required:** Billing Account Viewer
 
-## Phase 1 — Cloud Billing API (Account Metadata)
+Tests `CloudBillingClient`:
 
-**File:** `Phase1BillingDemo.cs`  
-**IAM required:** Billing Account Viewer  
-**NuGet:** `Google.Cloud.Billing.V1`
+- List all accessible billing accounts and validate structure
+- Filter accounts by `open=true`
+- `GetBillingAccountAsync` — fetch a specific account by ID
+- `GetProjectBillingInfoAsync` — verify billing is enabled on a project
+- `TestIamPermissionsAsync` — confirm viewer permissions are granted
+- Field validation: `MasterBillingAccount` prefix, `Open` flag
 
-Lists all billing accounts you have access to, then lists every GCP project linked to the first billing account found.
+### Phase 2 — BigQuery Billing Export (`Google.Cloud.BigQuery.V2`)
 
-**Sample output:**
-```
-Cloud Billing API test
+**Prerequisite:** [Standard usage cost export](https://cloud.google.com/billing/docs/how-to/export-data-bigquery)
+enabled in GCP Console → Billing → Billing Export.
 
-Billing accounts:
-- My Company Billing (billingAccounts/012345-6789AB-CDEF01)
+Tests `BigQueryClient`:
 
-Using first billing account: My Company Billing (billingAccounts/012345-6789AB-CDEF01)
-Projects linked to this billing account:
-- my-project-id | Billing enabled: True | Billing account: billingAccounts/012345-6789AB-CDEF01
-```
+- `ListDatasetsAsync` — enumerate datasets in the export project
+- `GetDatasetAsync` — fetch and validate the export dataset
+- `ListTablesAsync` — confirm the export table exists in the dataset
+- `GetTableAsync` — verify table schema contains `cost` and `service` fields
+- Query: total cost grouped by service for the current month (including credits)
+- Query: total cost grouped by project over the last 30 days
+- Query: parameterised date-range query using `BigQueryParameter`
 
-**To run**, update `Program.cs`:
-```csharp
-await Phase1BillingDemo.RunAsync();
-```
+### Phase 3 — Cloud Catalog / Pricing API (`Google.Cloud.Billing.V1`)
 
----
+**IAM role required:** None — catalog data is public.
 
-## Phase 2 — BigQuery Billing Export (Actual Spend)
+Tests `CloudCatalogClient`:
 
-**File:** `Phase2BigQueryDemo.cs`  
-**IAM required:** BigQuery Data Viewer on the export dataset  
-**NuGet:** `Google.Cloud.BigQuery.V2`
+- `ListServicesAsync` — verify Compute Engine, Cloud Storage, BigQuery are present
+- Validate service structure: non-empty `ServiceId`, `DisplayName`, `Name` prefix
+- `ListSkusAsync` (Compute Engine) — description, category, region validation
+- N1 Standard Core Americas SKU: tiered pricing tiers with positive unit price
+- N1 Standard RAM SKU existence
+- `ListSkusAsync` (Cloud Storage) — storage SKU and `UsageUnit` validation
+- Pricing expression `UsageUnit` is set for all sampled SKUs with pricing info
 
-Queries your BigQuery billing export table to calculate total cost (cost + credits) for the **current month**, grouped by GCP service.
+### Phase 4 — Billing Budgets API (`Google.Cloud.Billing.Budgets.V1`)
 
-### Setup
+**IAM role required:** Billing Account Administrator
 
-Enable billing export in the GCP Console:  
-**Billing → Billing Export → Standard usage cost export**
+Tests `BudgetServiceClient`:
 
-Note your **Project ID**, **Dataset ID**, and **Table name**, then update the constant in `Phase2BigQueryDemo.cs`:
-
-```csharp
-const string billingExportTable = "your-project-id.your_dataset.gcp_billing_export_v1_xxx";
-```
-
-**Sample output:**
-```
-Querying billing export table: my-project.billing_export.gcp_billing_export_v1_ABC123
-
-Current month cost by service:
-- Compute Engine: 142.37
-- Cloud Storage: 18.04
-- BigQuery: 4.91
-```
-
-**To run**, update `Program.cs`:
-```csharp
-await Phase2BigQueryDemo.RunAsync();
-```
+- `ListBudgetsAsync` — list all budgets on the configured billing account
+- Validate budget names contain the billing account prefix
+- Validate threshold rules: `0 < percent ≤ 2.0`
+- Validate `SpecifiedAmount`: non-empty currency code, non-negative units
+- `GetBudgetAsync` — fetch first listed budget and compare with list result
+- Pure-logic: `BuildTestBudget` helper — $50 USD, 50/90/100% thresholds, project filter
+- Destructive (disabled by default): create a test budget then delete it
 
 ---
 
-## Phase 3 — Cloud Catalog API (List Prices)
+## GcpApi.TestCommon
 
-**File:** `Phase3CatalogDemo.cs`  
-**IAM required:** None (public pricing data)  
-**NuGet:** `Google.Cloud.Billing.V1`
+Shared library used by all four test projects.
 
-Fetches the full public service catalog, locates **Compute Engine**, then paginates through its SKUs to find an **N1 Standard Core (Americas)** SKU and prints its pricing tiers. Falls back to any Compute core SKU if the preferred one is not found.
+| Class | Purpose |
+|-------|---------|
+| `GcpTestSettings` | Reads config from env vars with fallback to `testsettings.json` |
+| `GcpClientFixture` | `IAsyncLifetime` xUnit fixture; creates all GCP clients once per test class; catches ADC errors gracefully so pure-logic tests always run |
 
-**Sample output:**
-```
-Finding Compute Engine service...
-Compute Engine service ID: services/6F81-5844-456A
-
-Fetching SKUs...
-Selected SKU: N1 Standard Instance Core running in Americas
-SKU ID: services/6F81-5844-456A/skus/0048-21CE-74C0
-
-Pricing tiers:
-- Start usage amount: 0, unit price: $0.031611
-```
-
-**To run**, update `Program.cs`:
-```csharp
-await Phase3CatalogDemo.RunAsync();
-```
-
----
-
-## Phase 4 — Billing Budgets API (Spend Thresholds)
-
-**File:** `Phase4BudgetDemo.cs`  
-**IAM required:** Billing Account Administrator  
-**NuGet:** `Google.Cloud.Billing.Budgets.V1`
-
-Two operations:
-
-1. **`RunAsync`** — lists all existing budgets for a billing account (called from `Main` by default).
-2. **`CreateTestBudgetAsync`** — creates a **$50 USD** budget scoped to a specific project, with alert thresholds at **50%, 90%, and 100%** of actual spend. Not called by default — uncomment when ready to test.
-
-### Setup
-
-Update the constants in `Program.cs`:
-
-```csharp
-const string billingAccountId = "012345-6789AB-CDEF01"; // from Phase 1 output
-```
-
-To also create a test budget, uncomment:
-
-```csharp
-await Phase4BudgetDemo.CreateTestBudgetAsync(billingAccountId, "your-project-id");
-```
-
-**Sample output (listing):**
-```
-Listing budgets for billing account: billingAccounts/012345-6789AB-CDEF01
-
-Budget #1
-  Name:         billingAccounts/012345-6789AB-CDEF01/budgets/abc-123
-  Display name: Monthly cap
-  Amount:       $500.00 USD
-  Thresholds:   50% (CurrentSpend), 90% (CurrentSpend), 100% (CurrentSpend)
-```
-
-**To run** (already the default entry point):
-```csharp
-await Phase4BudgetDemo.RunAsync(billingAccountId);
-```
-
----
-
-## Running the App
-
-1. Authenticate:
-   ```bash
-   gcloud auth application-default login
-   ```
-
-2. Edit `Program.cs` to call the phase you want to test.
-
-3. Run:
-   ```bash
-   dotnet run
-   ```
+Pure-logic tests that never access a GCP client property pass without any
+credentials or configuration.
