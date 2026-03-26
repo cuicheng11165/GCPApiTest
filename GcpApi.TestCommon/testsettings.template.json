@@ -1,0 +1,5 @@
+{
+  "BillingAccountId": "012345-6789AB-CDEF01",
+  "ProjectId": "your-gcp-project-id",
+  "BigQueryExportTable": "your-project.billing_dataset.gcp_billing_export_v1_XXXXXX"
+}
