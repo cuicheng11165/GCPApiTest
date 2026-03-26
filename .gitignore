@@ -1,0 +1,47 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docobj
+
+# Rider
+.idea/
+
+# VS Code
+.vscode/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.assets.json
+
+# .NET runtime config (generated at build)
+*.runtimeconfig.json
+*.runtimeconfig.dev.json
+*.deps.json
+
+# Test results
+TestResults/
+coverage*/
+*.trx
+*.coveragexml
+
+# Secrets & credentials — never commit these
+appsettings.Development.json
+appsettings.Local.json
+*.pfx
+*.p12
+gcp-service-account*.json
+application_default_credentials.json
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
